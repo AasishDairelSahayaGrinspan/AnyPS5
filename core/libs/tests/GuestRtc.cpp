@@ -145,6 +145,12 @@ int main(int argc, char** argv) {
         const RtcTick westBound{3600000000ull}, westBelow{3599999999ull};
         Require(sceRtcFormatRFC3339Precise(text, &westBound, -60, 6) == 0 && std::strcmp(text, "0001-01-01T00:00:00.000000-01:00") == 0);
         Require(sceRtcFormatRFC3339Precise(text, &westBelow, -60, 6) == static_cast<int>(0x80B50003));
+        const RtcTick beforeYearOne{0};
+        std::memset(text, '#', sizeof(text));
+        Require(sceRtcFormatRFC3339Precise(text, &beforeYearOne, -60, 6) == static_cast<int>(0x80B50003) && text[0] == '#');
+        SetTimeZone("XXX+3");
+        Require(sceRtcFormatRFC3339PreciseLocalTime(text, &beforeYearOne, 6) == static_cast<int>(0x80B50003) && text[0] == '#');
+        SetTimeZone("UTC0");
         const RtcTick yearOneStart{1000000ull}, year2026{63902822400000000ull};
         Require(sceRtcFormatRFC3339(text, &yearOneStart, 840) == 0 && std::strcmp(text, "0001-01-01T14:00:01.00+14:00") == 0);
         Require(sceRtcFormatRFC3339(text, &yearOneStart, -720) == static_cast<int>(0x80B50003));
@@ -1008,6 +1014,12 @@ int main(int argc, char** argv) {
             Require(sceRtcFormatRFC3339PreciseLocalTime(precise, &tick, 6) == invalidYear && precise[0] == '#');
             Require(sceRtcFormatRFC3339PreciseLocalTime(precise, &tick, 7) == invalidValue && precise[0] == '#');
         }
+        SetTimeZone("UTC0");
+        const RtcTick beforeYearOne{0};
+        std::memset(precise, '#', sizeof(precise));
+        Require(sceRtcFormatRFC3339Precise(precise, &beforeYearOne, -60, 6) == invalidYear && precise[0] == '#');
+        SetTimeZone("XXX+3");
+        Require(sceRtcFormatRFC3339PreciseLocalTime(precise, &beforeYearOne, 6) == invalidYear && precise[0] == '#');
         SetTimeZone("UTC0");
         Require(sceRtcCompareTick(&first, &second) == -1 && sceRtcCompareTick(&second, &first) == 1 && sceRtcCompareTick(&first, &first) == 0);
         Require(sceRtcCompareTick(nullptr, &first) == invalidPointer && sceRtcCompareTick(&first, nullptr) == invalidPointer);
