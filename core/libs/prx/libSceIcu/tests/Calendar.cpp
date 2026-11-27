@@ -666,17 +666,26 @@ void Run() {
     status = 0;
     const std::int32_t canonLen = ucal_getCanonicalTimeZoneID_nid_postfix(
         utc.data(), 3, canonical.data(), static_cast<std::int32_t>(canonical.size()), &isSystem, &status);
-    if (status <= 0) {
-        Require(canonLen == 3 && canonical[0] == u'U' && canonical[1] == u'T' && canonical[2] == u'C');
+    if (status == 2) {
+        Require(canonLen <= 0, "ucal_getCanonicalTimeZoneID_nid_postfix: missing ICU zone data");
     } else {
-        Require(status == 1 || status == 2);
+        Require(status <= 0, "ucal_getCanonicalTimeZoneID_nid_postfix: unexpected error");
+        Require(isSystem != 0, "ucal_getCanonicalTimeZoneID_nid_postfix: UTC should be a system zone");
+        Require(canonLen == 7 && canonical[0] == u'E' && canonical[1] == u't' && canonical[2] == u'c' &&
+                canonical[3] == u'/' && canonical[4] == u'U' && canonical[5] == u'T' && canonical[6] == u'C',
+                "ucal_getCanonicalTimeZoneID_nid_postfix: UTC canonical ID");
     }
 
     std::array<char16_t, 64> displayName{};
     status = 0;
     const std::int32_t dispLen = ucal_getTimeZoneDisplayName_nid_postfix(
         cal, 0, "en_US", displayName.data(), static_cast<std::int32_t>(displayName.size()), &status);
-    Require(dispLen >= 0 || status > 0);
+    if (status == 2) {
+        Require(dispLen <= 0, "ucal_getTimeZoneDisplayName_nid_postfix: missing ICU zone data");
+    } else {
+        Require(status <= 0, "ucal_getTimeZoneDisplayName_nid_postfix: unexpected error");
+        Require(dispLen > 0, "ucal_getTimeZoneDisplayName_nid_postfix: expected a display name");
+    }
 
     status = 0;
     auto* keywords = ucal_getKeywordValuesForLocale_nid_postfix("calendar", "en_US", 1, &status);

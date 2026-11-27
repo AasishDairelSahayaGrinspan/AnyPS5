@@ -106,6 +106,7 @@ add_library(icu_common STATIC EXCLUDE_FROM_ALL
     ${ICU_SOURCE_DIR}/common/unisetspan.cpp
     ${ICU_SOURCE_DIR}/common/unistr.cpp
     ${ICU_SOURCE_DIR}/common/unistr_case.cpp
+    ${ICU_SOURCE_DIR}/common/unistr_cnv.cpp
     ${ICU_SOURCE_DIR}/common/unormcmp.cpp
     ${ICU_SOURCE_DIR}/common/uobject.cpp
     ${ICU_SOURCE_DIR}/common/uprops.cpp
