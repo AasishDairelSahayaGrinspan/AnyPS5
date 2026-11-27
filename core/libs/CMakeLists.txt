@@ -1394,6 +1394,16 @@ if(BUILD_TESTING)
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceRudp>")
     endif()
 
+    add_test_executable(guest_rudp_status_counters_tests tests/GuestRudpStatusCounters.cpp)
+    target_include_directories(guest_rudp_status_counters_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(guest_rudp_status_counters_tests PRIVATE libSceRudp libc)
+    configure_windows_unwind(guest_rudp_status_counters_tests)
+    add_test(NAME guest_rudp_status_counters COMMAND guest_rudp_status_counters_tests)
+    if(WIN32)
+        set_tests_properties(guest_rudp_status_counters PROPERTIES ENVIRONMENT_MODIFICATION
+            "PATH=path_list_prepend:$<TARGET_FILE_DIR:libSceRudp>")
+    endif()
+
     add_test_executable(guest_rudp_context_queries_tests tests/GuestRudpContextQueries.cpp)
     target_include_directories(guest_rudp_context_queries_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(guest_rudp_context_queries_tests PRIVATE libSceRudp libc)

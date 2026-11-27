@@ -59,7 +59,7 @@ constexpr uint64_t RUDP_POLL_WAIT_MAX_USEC = static_cast<uint64_t>(std::numeric_
 constexpr int RUDP_POOL_MIN_SIZE = 0xC58;
 constexpr std::uintptr_t RUDP_POOL_ALIGNMENT = 8;
 constexpr std::size_t RUDP_STATUS_SIZE = 0xF8;
-constexpr std::size_t RUDP_CONTEXT_STATUS_SIZE = 0x30;
+constexpr std::size_t RUDP_CONTEXT_STATUS_SIZE = 0x58;
 constexpr std::size_t RUDP_CONTEXT_STATUS_PARENT = 4;
 constexpr std::size_t RUDP_CONTEXT_STATUS_STATE = 0;
 constexpr std::int32_t RUDP_CONTEXT_STATE_ACTIVATED = 1;
@@ -67,6 +67,11 @@ constexpr std::int32_t RUDP_CONTEXT_STATE_LISTENING = 6;
 constexpr std::size_t RUDP_STATUS_CURRENT_CONTEXTS = 0x64;
 constexpr std::size_t RUDP_CONTEXT_BUFFER_STATUS_SIZE = 16;
 constexpr uint16_t RUDP_MAX_SEGMENT_SIZE = 1410;
+constexpr std::uint32_t RUDP_STATE_RUNNING = 2;
+
+static inline void Write32LE(unsigned char* dst, std::uint32_t value) {
+    std::memcpy(dst, &value, sizeof(value));
+}
 
 enum RudpOption {
     RUDP_OPTION_MAX_PAYLOAD = 1,
@@ -96,6 +101,21 @@ bool g_inited = false;
 bool g_internal_io_thread_enabled = false;
 uint16_t g_max_segment_size = RUDP_MAX_SEGMENT_SIZE;
 int g_next_ctx = 0;
+
+struct RudpHeapAlloc {
+    std::size_t size = 0;
+};
+
+uint32_t g_rudp_total_contexts = 0;
+uint32_t g_rudp_available_contexts = 0;
+uint32_t g_rudp_total_sockets = 0;
+uint32_t g_rudp_available_sockets = 0;
+uint32_t g_rudp_used_mallocs = 0;
+uint32_t g_rudp_peak_mallocs = 0;
+uint32_t g_rudp_max_mallocs = 0x4000;
+uint32_t g_rudp_current_memory = 0;
+uint32_t g_rudp_peak_memory = 0;
+uint32_t g_rudp_total_memory = 0;
 struct RudpContext {
     bool bound = false;
     int socketId = -1;
@@ -124,6 +144,7 @@ struct RudpContext {
         {RUDP_OPTION_KEEP_ALIVE_INTERVAL, 0},
         {RUDP_OPTION_KEEP_ALIVE_TIMEOUT, 20000},
     };
+    std::map<void*, RudpHeapAlloc> allocs;
 };
 std::map<int, RudpContext> g_ctx;
 GuestRudpEventHandler g_handler = nullptr;
@@ -224,6 +245,16 @@ int APS5_VABI sceRudpInit_nid_postfix(void* mem_pool, int mem_pool_size) {
     }
     g_internal_io_thread_enabled = false;
     g_inited = true;
+    g_rudp_total_contexts = 1;
+    g_rudp_available_contexts = 1;
+    g_rudp_total_sockets = 64;
+    g_rudp_available_sockets = 64;
+    g_rudp_used_mallocs = 0;
+    g_rudp_peak_mallocs = 0;
+    g_rudp_max_mallocs = 0x4000;
+    g_rudp_current_memory = 0;
+    g_rudp_peak_memory = 0;
+    g_rudp_total_memory = 0;
     return 0;
 }
 
@@ -251,12 +282,74 @@ int APS5_VABI sceRudpGetStatus(void* status, std::size_t size) {
         return RUDP_ERROR_INVALID_ARGUMENT;
     }
     unsigned char report[RUDP_STATUS_SIZE] = {};
-    const auto contexts = static_cast<uint32_t>(g_ctx.size());
-    std::memcpy(report + RUDP_STATUS_CURRENT_CONTEXTS, &contexts, sizeof(contexts));
+    Write32LE(report + 0x00, 1);
+    Write32LE(report + 0x04, g_max_segment_size);
+    Write32LE(report + 0x40, g_rudp_total_contexts);
+    Write32LE(report + 0x44, g_rudp_available_contexts);
+    Write32LE(report + 0x48, g_rudp_total_sockets);
+    Write32LE(report + 0x4c, g_rudp_available_sockets);
+    Write32LE(report + 0x50, g_rudp_used_mallocs);
+    Write32LE(report + 0x54, g_rudp_peak_mallocs);
+    Write32LE(report + 0x58, g_rudp_max_mallocs);
+    Write32LE(report + 0x60, RUDP_STATE_RUNNING);
+    Write32LE(report + 0x64, static_cast<uint32_t>(g_ctx.size()));
+    Write32LE(report + 0x68, g_rudp_current_memory);
+    Write32LE(report + 0x6c, g_rudp_peak_memory);
+    Write32LE(report + 0x70, g_rudp_total_memory);
+    Write32LE(report + 0x74, g_internal_io_thread_enabled ? 1u : 0u);
     const int savedErrno = errno;
     const bool copied = GuestCopyOut_nid_no_patch(status, report, size);
     errno = savedErrno;
     if (!copied) return RUDP_ERROR_INVALID_ARGUMENT;
+    return 0;
+}
+
+int APS5_VABI sceRudpNetAllocate(int ctxId, std::size_t size, void** alloc) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (!valid_ctx(ctxId) || alloc == nullptr || size == 0) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
+    }
+    void* ptr = std::malloc(size);
+    if (ptr == nullptr) {
+        return RUDP_ERROR_MEMORY;
+    }
+    std::memset(ptr, 0, size);
+    auto& ctx = g_ctx.at(ctxId);
+    ctx.allocs[ptr] = RudpHeapAlloc{size};
+    ++g_rudp_used_mallocs;
+    if (g_rudp_used_mallocs > g_rudp_peak_mallocs) g_rudp_peak_mallocs = g_rudp_used_mallocs;
+    g_rudp_current_memory += static_cast<uint32_t>(size);
+    if (g_rudp_current_memory > g_rudp_peak_memory) g_rudp_peak_memory = g_rudp_current_memory;
+    if (g_rudp_current_memory > g_rudp_total_memory) g_rudp_total_memory = g_rudp_current_memory;
+    if (g_rudp_available_sockets > 0) --g_rudp_available_sockets;
+    *alloc = ptr;
+    return 0;
+}
+
+int APS5_VABI sceRudpNetFree(int ctxId, void* alloc) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!g_inited) {
+        return RUDP_ERROR_NOT_INITIALIZED;
+    }
+    if (!valid_ctx(ctxId) || alloc == nullptr) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
+    }
+    auto& ctx = g_ctx.at(ctxId);
+    auto it = ctx.allocs.find(alloc);
+    if (it == ctx.allocs.end()) {
+        return RUDP_ERROR_INVALID_ARGUMENT;
+    }
+    const auto size = it->second.size;
+    std::free(alloc);
+    ctx.allocs.erase(it);
+    if (g_rudp_used_mallocs > 0) --g_rudp_used_mallocs;
+    g_rudp_current_memory = (g_rudp_current_memory >= static_cast<uint32_t>(size))
+        ? (g_rudp_current_memory - static_cast<uint32_t>(size)) : 0;
+    ++g_rudp_available_sockets;
+    if (g_rudp_available_sockets > g_rudp_total_sockets) g_rudp_available_sockets = g_rudp_total_sockets;
     return 0;
 }
 
@@ -269,6 +362,12 @@ int APS5_VABI sceRudpEnd(void) {
     for (const auto& [id, poll] : g_polls) {
         if (const int inside = waiters_inside(poll)) leaving.emplace(id, inside);
     }
+    g_rudp_total_contexts = 0;
+    g_rudp_available_contexts = 0;
+    g_rudp_total_sockets = 0;
+    g_rudp_available_sockets = 0;
+    g_rudp_used_mallocs = 0;
+    g_rudp_current_memory = 0;
     g_inited = false;
     g_ctx.clear();
     g_polls.clear();
@@ -297,6 +396,14 @@ int APS5_VABI sceRudpTerminate(int ctx_id) {
     } else if (context->second.bound) {
         release_binding(context->second.socketId, context->second.vport);
     }
+    for (const auto& [_, alloc] : context->second.allocs) {
+        if (g_rudp_used_mallocs > 0) --g_rudp_used_mallocs;
+        g_rudp_current_memory = (g_rudp_current_memory >= static_cast<uint32_t>(alloc.size))
+            ? (g_rudp_current_memory - static_cast<uint32_t>(alloc.size)) : 0;
+    }
+    ++g_rudp_available_contexts;
+    g_rudp_available_sockets += 4;
+    if (g_rudp_available_sockets > g_rudp_total_sockets) g_rudp_available_sockets = g_rudp_total_sockets;
     g_ctx.erase(context);
     remove_ctx_from_polls(ctx_id);
     g_accept_changed.NotifyAll();
@@ -345,6 +452,9 @@ int APS5_VABI sceRudpCreateContext(GuestRudpEventHandler handler, void* arg, int
     if (!GuestCopyOut_nid_no_patch(ctxId, &id, sizeof(id))) return RUDP_ERROR_INVALID_ARGUMENT;
     ++g_next_ctx;
     g_ctx.emplace(id, RudpContext{});
+    if (g_rudp_available_contexts > 0) --g_rudp_available_contexts;
+    if (g_rudp_available_sockets >= 4) g_rudp_available_sockets -= 4;
+    else g_rudp_available_sockets = 0;
     return 0;
 }
 
@@ -461,6 +571,10 @@ int APS5_VABI sceRudpGetContextStatus(int ctx_id, void* status, std::size_t size
         return RUDP_ERROR_INVALID_CONTEXT_ID;
     }
     unsigned char report[RUDP_CONTEXT_STATUS_SIZE] = {};
+    Write32LE(report + 0x40, g_rudp_total_contexts);
+    Write32LE(report + 0x44, g_rudp_available_contexts);
+    Write32LE(report + 0x48, 4);
+    Write32LE(report + 0x4c, 4);
     std::memset(report + RUDP_CONTEXT_STATUS_PARENT, 0xFF, sizeof(std::int32_t));
     if (g_ctx.at(ctx_id).listening) {
         std::memcpy(report + RUDP_CONTEXT_STATUS_STATE, &RUDP_CONTEXT_STATE_LISTENING, sizeof(RUDP_CONTEXT_STATE_LISTENING));

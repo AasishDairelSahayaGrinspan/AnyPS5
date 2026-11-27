@@ -41,5 +41,7 @@ int APS5_VABI sceRudpListen(int ctxId, int backlog);
 int APS5_VABI sceRudpPollCancel(int pollId);
 int APS5_VABI sceRudpSetMaxSegmentSize(uint16_t mss);
 int APS5_VABI sceRudpGetContextBufferStatus(int ctxId, void* status, std::size_t size);
+int APS5_VABI sceRudpNetAllocate(int ctxId, std::size_t size, void** alloc);
+int APS5_VABI sceRudpNetFree(int ctxId, void* alloc);
 
 }
